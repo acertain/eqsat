@@ -12,7 +12,7 @@
 --
 -- the traditional smt egraph stores terms with equal children multiple times,
 -- and only keeps track of equality between them. we merge terms with equal children
---
+-- TODO: is this true?
 
 -- TODO:
 -- - merging terms / adding to equiv classes
@@ -20,6 +20,11 @@
 -- - equality constraints / nonlinear variables
 -- - aggregates
 -- - tests
+--
+-- - think about doing something special for e.g. AC
+
+-- TODO: would be nice to be able to use union-find like when no function symbols
+-- & only do work for function symbols
 
 module Epeg where
 
@@ -55,8 +60,8 @@ data TmAlg f =
   | Var Int
   deriving (Eq,Show,Functor,Foldable,Traversable,Hashable,Generic)
 
-tmChildren :: TmAlg f -> [f]
-tmChildren x = toList x
+tmChildren :: Term s -> [EquivClass s]
+tmChildren x = toList $ tmBody x
 
 matchAlg :: TmAlg a -> TmAlg b -> Maybe [(a,b)]
 matchAlg x y | (() <$ x) == (() <$ y) = Just $ zip (toList x) (toList y)
@@ -65,7 +70,10 @@ matchAlg x y | (() <$ x) == (() <$ y) = Just $ zip (toList x) (toList y)
 data Pattern = Pat (TmAlg Pattern) | PatVar
   deriving (Eq, Hashable, Generic)
 
-newtype WkTermSet s = WkTermSet (Vector s (Weak (EquivClass s), Int))
+newtype WkTermSet s = WkTermSet (Vector s (Weak (Term s)))
+
+-- TODO: EquivClassRef? like a ref to an equiv class that's safe to use (is updated on merges)
+-- TermRef too? i think Term as is is not safe to use (children equiv classes might become invalid)
 
 -- data Term s = Term {
 --   _tmClass :: MutVar s (EquivClass s),
@@ -73,12 +81,17 @@ newtype WkTermSet s = WkTermSet (Vector s (Weak (EquivClass s), Int))
 --   _tmBody :: TmAlg (EquivClass s)
 -- }
 
-type Term s = TmAlg (EquivClass s)
+data Term s = Term {
+  tmClassRef :: {-# UNPACK #-} !(MutVar s (EquivClass s)),
+  tmBody :: TmAlg (EquivClass s)
+}
+
+-- type Term s = TmAlg (EquivClass s)
 
 -- TODO: should these be weak?
 data EquivClassBackref s =
-  -- terms that have us as their child: class + index into members
-    EqClassRef (EquivClass s) Int
+  -- terms that have us as their child
+    TermRef (Weak (Term s))
   -- we're in a weak term set, index
   | TermSetRef (WkTermSet s) Int
 
@@ -105,21 +118,16 @@ data PatternState s = PatternMatches {
 }
 
 
--- TODO: need at least count for sampling
--- should just do group (mb monoid too?) aggregates
 
 
 data Aggregate where
   Agg :: (Monoid a, Typeable a) => Proxy a -> Aggregate
 
 data EquivClass s = EquivClass {
-  clsMembers :: Vector s (Term s),
+  clsMembers :: {-# UNPACK #-} !(Vector s (Term s)),
   -- todo: len parents is effectively a ref count, consider using it?
-  clsParents :: Vector s (EquivClassBackref s),
-  -- list of indexes into members
-  -- should be Maybe (NonEmpty Int)?
-  -- or just use [Int]?
-  clsPatterns :: MutVar s (HashMap Pattern (PatternState s))
+  clsParents :: {-# UNPACK #-} !(Vector s (EquivClassBackref s)),
+  clsPatterns :: {-# UNPACK #-} !(MutVar s (HashMap Pattern (PatternState s)))
 }
 
 instance Eq (EquivClass s) where
@@ -138,30 +146,17 @@ data EqSatState s = EqSatState {
   leaves :: WkTermSet s
 }
 
--- a + b == b + a
-
 type EqSat = (?eqsat :: EqSatState RealWorld)
 
 type Cls = EquivClass RealWorld
 type Tm = Term RealWorld
 
 
-patternState :: EqSat => Cls -> Pattern -> IO (PatternState RealWorld)
-patternState cls p = do
-  m <- readMutVar $ clsPatterns cls
-  case m ^? ix p of
-    Just r -> pure r
-    Nothing -> do
-      writeMutVar (clsPatterns cls) (m & at p .~ Just (PatternNoMatches []))
-      members <- readVectorList $ clsMembers cls
-      for_ members \x -> runQuery $ Query p x
-      m' <- readMutVar (clsPatterns cls)
-      pure $ m' ^?! ix p
 
 runQuery :: EqSat => Query RealWorld -> IO ()
 -- TODO: assert or check not already matched?
 -- i think want version that checks but normally dont?
-runQuery q@(Query p@(Pat pa) tm) = case matchAlg pa tm of
+runQuery q@(Query p@(Pat pa) tm) = case matchAlg pa (tmBody tm) of
   Nothing -> pure ()
   Just bnds -> do
     x <- runMaybeT $ for bnds \(pat,cls) -> when (pat /= PatVar) $ do
@@ -173,14 +168,25 @@ runQuery q@(Query p@(Pat pa) tm) = case matchAlg pa tm of
         mzero
     when (has _Just x) $ do
       r <- mkWeak tm tm Nothing
-      Just cls <- findTm tm
+      cls <- tmClass tm
       m <- readMutVar (clsPatterns cls)
       if has (ix p . psBlockedQueries . _head) m then do
         writeMutVar (clsPatterns cls) (m & ix p .~ PatternMatches [] [r])
         forOf_ (ix p . psBlockedQueries . each) m runQuery
       else do
         writeMutVar (clsPatterns cls) (m & ix p . psMatches %~ (r:))
- 
+  where
+  patternState :: EqSat => Cls -> Pattern -> IO (PatternState RealWorld)
+  patternState cls p = do
+    m <- readMutVar $ clsPatterns cls
+    case m ^? ix p of
+      Just r -> pure r
+      Nothing -> do
+        writeMutVar (clsPatterns cls) (m & at p .~ Just (PatternNoMatches []))
+        members <- freezeVector $ clsMembers cls
+        for_ members \x -> runQuery $ Query p x
+        m' <- readMutVar (clsPatterns cls)
+        pure $ m' ^?! ix p
 
 newEmptyCls :: IO Cls
 newEmptyCls = EquivClass <$> newVector 1 <*> newVector 1 <*> newMutVar mempty
@@ -189,15 +195,19 @@ newClass :: EqSat => Tm -> IO Cls
 newClass tm = do
   cls <- newEmptyCls
   idx <- addVector tm (clsMembers cls)
-  for_ (tmChildren tm) \cls' -> addVector (EqClassRef cls 0) (clsParents cls')
+  tmref <- mkWeak tm tm Nothing
+  for_ (tmChildren tm) \cls' -> addVector (TermRef tmref) (clsParents cls')
   when (null $ tmChildren tm) $ do
     wkcls <- mkWeak cls cls Nothing
-    _ <- addVector (wkcls, idx) (coerce $ leaves ?eqsat)
+    _ <- addVector tmref (coerce $ leaves ?eqsat)
     pure ()
   pure cls
 
-findTm :: EqSat => Tm -> IO (Maybe Cls)
-findTm tm = case tmChildren tm of
+tmClass :: Tm -> IO Cls
+tmClass = readMutVar . tmClassRef
+
+findTm :: EqSat => TmAlg Cls -> IO (Maybe Cls)
+findTm tm = case toList tm of
   chld:_ -> do
     -- Alt (MaybeT IO)
     let vec = clsParents chld
@@ -210,9 +220,13 @@ findTm tm = case tmChildren tm of
 
   where
     f tm1 vec i = do
-      EqClassRef cls idx <- readVector (coerce vec) i
-      tm2 <- readVector (clsMembers cls) idx
-      if tm1 == tm2 then pure cls else mempty
+      -- TODO: is this right???
+      -- FIXME: current parent pointers useless/broken
+      -- need to either store equiv class in parents or store equiv class in terms
+      TermRef tmref <- readVector (coerce vec) i
+      Just tm2 <- liftIO $ deRefWeak tmref
+      if tm1 == tmBody tm2 then readMutVar $ tmClass tm2
+      else mempty
 
 
 mk :: EqSat => Tm -> IO Cls
@@ -221,6 +235,31 @@ mk tm = do
   case x of
     Nothing -> newClass tm
     Just cls -> pure cls
+
+
+-- merge a and b. both a and b are invalid after, use the returned class
+merge :: Cls -> Cls -> IO Cls
+-- TODO: merge into smaller
+merge a b = do
+  a_ms <- freezeVector (clsMembers a)
+  b_ms <- freezeVector (clsMembers b)
+  b_ps <- freezeVector (clsParents b)
+
+  for b_ms $ \bm -> do
+    for (tmChildren bm) \cls -> do
+      -- update cls's b parent to point to a
+      undefined
+    when (elem bm a_ms) $ error "term in multiple equiv classes"
+    addVector bm (clsMembers a)
+    undefined
+  -- appendVector (clsMembers a) (clsMembers b)
+  -- appendVector (clsParents a) (clsParents b)
+  
+  -- check for parent merges
+  -- check for fundeps causing member merges
+  -- update patterns
+  undefined
+  
 
 
 withEqSat :: (EqSat => IO r) -> IO r

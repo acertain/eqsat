@@ -28,3 +28,18 @@ need to add `a = b` as a premise somehow?
 theory solver can either register theory vars with us or use TermSet
 
 todo: figure out a safe theory interface (that doesn't expose EquivClass or that makes it impossible to store EquivClass)
+
+
+# reading list
+
+https://ths.rwth-aachen.de/wp-content/uploads/sites/4/teaching/theses/neuberger_bachelor.pdf (GENERATION OF INFEASIBLE SUBSETS
+IN LESS-LAZY SMT-SOLVING FOR
+THE THEORY OF UNINTERPRETED FUNCTIONS)
+
+## smt integration
+
+https://sci-hub.tw/10.1007/978-3-319-94144-8_7 - Chronological backtracking
+https://hal.archives-ouvertes.fr/hal-01935591/document https://github.com/witan-org/witan - Centralizing equality reasoning in MCSAT
+http://profs.sci.univr.it/~bonacina/talks/FroCoS2019keynoteSpeech-slides.pdf - Conflict-Driven Reasoning in Unions of Theories
+
+

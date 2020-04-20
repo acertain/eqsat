@@ -10,12 +10,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 
--- | e-peg
+-- | e-peg/egraph
 --
--- the traditional smt egraph stores terms with equal children multiple times,
--- and only keeps track of equality between them. we merge terms with equal children
--- TODO: is this true? idk
-
 -- TODO:
 -- - merging terms / adding to equiv classes
 --   - congr closure
@@ -83,9 +79,11 @@ data Pattern = Pat (TmAlg Pattern) | PatVar
 newtype WkTermSet s = WkTermSet (Vector s (Weak (Term s)))
 
 data Term s = Term {
-  -- TODO: use structs w/ this as a field in Term?
+  -- union-find elem
   tmClass :: {-# UNPACK #-} !(EquivClass s),
-  tmBody :: TmAlg (ClassRoot s)
+  -- currently store an EquivClass here, but instead could make Term be a struct/ArrayArray, have EquivClass be a field, store `ClassRoot`s in body, & mutate them on merge
+  -- or store ClassRoot immutably & not expose Term (only store it in equiv classes)
+  tmBody :: TmAlg (EquivClass s)
 }
 
 
@@ -209,7 +207,8 @@ runQuery :: EqSat s => Query s -> IO ()
 runQuery q@(Query p@(Pat pa) tm) = case matchAlg pa (tmBody tm) of
   Nothing -> pure ()
   Just bnds -> do
-    x <- runMaybeT $ for bnds \(pat,cr) -> when (pat /= PatVar) $ do
+    x <- runMaybeT $ for bnds \(pat,cls) -> when (pat /= PatVar) $ do
+      cr <- classRoot cls
       ps <- liftIO $ patternState cr pat
       if has (psMatches . _head) ps then
         pure ()
@@ -217,7 +216,7 @@ runQuery q@(Query p@(Pat pa) tm) = case matchAlg pa (tmBody tm) of
         modifyMutVar (clsPatterns cr) (\m -> m & ix p . psBlockedQueries %~ (q:))
         mzero
     when (has _Just x) $ do
-0      r <- mkWeak tm tm Nothing
+      r <- mkWeak tm tm Nothing
       cr <- classRoot (tmClass tm)
       m <- readMutVar (clsPatterns cr)
       if has (ix p . psBlockedQueries . _head) m then do
@@ -256,7 +255,8 @@ findTerm tm = do
     f tm1 vec i = do
       tmref <- readVector (coerce vec) i
       Just tm2 <- liftIO $ deRefWeak tmref
-      if tm1 == tmBody tm2 then pure tm2
+      tm2' <- traverse classRoot $ tmBody tm2
+      if tm1 == tm2' then pure tm2
       else mempty
 
 makeTerm :: EqSat s => TmAlg (Term s) -> IO (Term s)
@@ -264,11 +264,11 @@ makeTerm tm = findTerm tm >>= \w -> case w of
   Just x -> pure x
   Nothing -> do
     var <- newMutVar Zero
-    bd <- traverse (classRoot . tmClass) tm
+    let bd = fmap tmClass tm
     let tm' = Term (ClassRef var) bd
     writeMutVar var $ One tm'
     tmref <- mkWeak tm' tm' Nothing
-    for_ (toList bd) \cls -> addVector tmref (clsParents cls)
+    for_ (toList bd) \cls -> (addVector tmref . clsParents) =<< classRoot cls
     when (null $ toList bd) $ void $ addVector tmref (coerce $ leaves ?eqsat)
     pure tm'
 

@@ -32,9 +32,16 @@ todo: figure out a safe theory interface (that doesn't expose EquivClass or that
 
 # reading list
 
-https://ths.rwth-aachen.de/wp-content/uploads/sites/4/teaching/theses/neuberger_bachelor.pdf (GENERATION OF INFEASIBLE SUBSETS
-IN LESS-LAZY SMT-SOLVING FOR
-THE THEORY OF UNINTERPRETED FUNCTIONS)
+https://ths.rwth-aachen.de/wp-content/uploads/sites/4/teaching/theses/neuberger_bachelor.pdf (GENERATION OF INFEASIBLE SUBSETS IN LESS-LAZY SMT-SOLVING FOR THE THEORY OF UNINTERPRETED FUNCTIONS)
+https://hal.inria.fr/hal-01442691/document (Congruence Closure with Free Variables)
+https://link.springer.com/article/10.1007/s10703-017-0283-x (NP-completeness of small conflict set generation for congruence closure
+)
+https://sci-hub.tw/10.1023/B:JARS.0000009518.26415.49 (Abstract Congruence Closure)
+https://arxiv.org/pdf/2004.03082.pdf (egg: Easy, Efficient, and Extensible E-graphs): meh
+http://fmv.jku.at/master/Sperl-MasterThesis-2016.pdf (Bit-Vector Rewriting using Union-Find with Offsets)
+https://sci-hub.tw/10.1145/3299869.3319880 (Efficient Subgraph Matching: Harmonizing Dynamic Programming, Adaptive Matching Order, and Failing Set Together)
+https://homepages.dcc.ufmg.br/~hbarbosa/papers/hosmt_report.pdf (Extending SMT Solvers to Higher-Order Logic (Technical Report))
+
 
 ## smt integration
 

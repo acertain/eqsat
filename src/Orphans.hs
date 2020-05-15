@@ -1,3 +1,7 @@
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeFamilies #-}
 module Orphans where
 
@@ -16,3 +20,7 @@ instance MonadFail m => MonadFail (Alt m) where
 
 instance MonadIO m => MonadIO (Alt m) where
   liftIO a = Alt (liftIO a)
+
+
+class (PrimMonad m, s ~ PrimState m) => MonadPrim s m | m -> s
+instance (PrimMonad m, s ~ PrimState m) => MonadPrim s m

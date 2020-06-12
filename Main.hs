@@ -1,6 +1,6 @@
 module Main where
 
-import Eqsat
+import Egraph
 
 main :: IO ()
 main = do

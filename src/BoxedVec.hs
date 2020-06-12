@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# language BlockArguments #-}
 {-# language TupleSections #-}
 {-# language PatternSynonyms #-}
@@ -8,7 +9,6 @@ import Control.Monad.ST
 import Data.Bits
 import Data.Primitive.Array
 import Data.Primitive.MutVar
-import Data.Foldable
 
 
 -- transient, slice from 0 to ix
@@ -37,7 +37,7 @@ resizeMutableArray a n' = do
 
 -- ensure space for k total elements
 reserveMutableArray :: PrimMonad m => MutableArray (PrimState m) a -> Int -> m (MutableArray (PrimState m) a)
-reserveMutableArray a k = do
+reserveMutableArray a k = stToPrim do
   let n = sizeofMutableArray a
   if k <= n then pure a else resizeMutableArray a (k*2)
 {-# inline reserveMutableArray #-}
@@ -55,6 +55,7 @@ subVec (Vec i pa) = stToPrim do
   let n' = unsafeShiftR n 2
   if i >= n' then return $ Vec (i-1) pa
   else Vec (i-1) <$> resizeMutableArray pa (n*2)
+{-# inline subVec #-}
 
 readVec :: (PrimMonad m) => Vec (PrimState m) a -> Int -> m a
 readVec (Vec _ pa) i = readArray pa i
@@ -75,6 +76,7 @@ appendVec (Vec ai aa) (Vec bi ba) = do
   aa' <- reserveMutableArray aa (ai+bi)
   copyMutableArray aa' ai ba 0 bi
   pure $ Vec (ai+bi) aa'
+{-# inline appendVec #-}
 
 -- this would play the role of std::vector, non-transient non-thread-safe version
 newtype Vector s a = Vector (MutVar s (Vec s a))
@@ -116,6 +118,13 @@ readVector :: (PrimMonad m) => Vector (PrimState m) a -> Int -> m a
 readVector (Vector ref) i = readMutVar ref >>= \(Vec _ pa) -> readArray pa i
 {-# inline readVector #-}
 
+readVectorDef :: PrimMonad m => Vector (PrimState m) a -> Int -> m a -> m a
+readVectorDef v ix ma = do
+  s <- sizeVector v
+  if ix < s then readVector v ix else go (s-ix) (ma >>= \x -> addVector x v >> pure x)
+    where go i m = if i <= 1 then m else m >> go (i-1) m
+{-# inline readVectorDef #-}
+
 writeVector :: (PrimMonad m) => Vector (PrimState m) a -> Int -> a -> m ()
 writeVector (Vector ref) i a = readMutVar ref >>= \vec -> writeVec vec i a
 {-# inline writeVector #-}
@@ -124,7 +133,6 @@ sizeVector :: PrimMonad m => Vector (PrimState m) a -> m Int
 sizeVector (Vector ref) = stToPrim $ sizeVec <$> readMutVar ref
 {-# inline sizeVector #-}
 
--- TODO: maybe freeze into vector:Vector to take advantage of fusion?
 freezeVector :: PrimMonad m => Vector (PrimState m) a -> m (Array a)
 freezeVector (Vector ref) = readMutVar ref >>= \(Vec i pa) -> freezeArray pa 0 i
 {-# inline freezeVector #-}
@@ -135,3 +143,14 @@ appendVector (Vector ar) (Vector br) = do
   a <- readMutVar ar
   b <- readMutVar br
   writeMutVar ar =<< appendVec a b
+{-# inline appendVector #-}
+
+forVector_ :: PrimMonad m => Vector (PrimState m) a -> (a -> m ()) -> m ()
+forVector_ v f = iforVector_ v (\_ x -> f x)
+{-# inline forVector_ #-}
+
+iforVector_ :: PrimMonad m => Vector (PrimState m) a -> (Int -> a -> m ()) -> m ()
+iforVector_ (Vector ref) f = readMutVar ref >>= \v@(Vec _ pa) -> go pa 0 (sizeVec v) where
+  go a !i !j | i >= j = pure ()
+             | otherwise = readArray a i >>= \x -> f i x >> go a (i+1) j
+{-# inline iforVector_ #-}
